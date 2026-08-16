@@ -4,7 +4,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
-import android.app.Activity
 import android.app.AndroidAppHelper
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -13,12 +12,7 @@ import android.content.IntentFilter
 import android.media.MediaCodec
 import android.os.Build
 import android.view.View
-import android.view.ViewGroup
-import android.view.MotionEvent
-import android.widget.TextView
-import android.os.SystemClock
 import android.provider.MediaStore
-import java.util.WeakHashMap
 import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -48,8 +42,6 @@ class MainHook : IXposedHookLoadPackage {
     private val filenameLoads = ConcurrentHashMap.newKeySet<Long>()
     private val mediaStoreFilenameCache = ConcurrentHashMap<Long, String>()
     private val filenameExecutor = Executors.newSingleThreadExecutor()
-    private val albumOpenAttempts = WeakHashMap<Activity, Int>()
-    private val albumOpenLock = Any()
     private val modulePreferences = XSharedPreferences(
         ModuleSettings.PACKAGE_NAME,
         ModuleSettings.PREFS_NAME
@@ -77,7 +69,6 @@ class MainHook : IXposedHookLoadPackage {
         try {
             installSoftwareHevcOverride()
             registerSettingsReceiver()
-            installAutomaticRenegadeAlbumOpen()
 
             val photoCellView = XposedHelpers.findClass(
                 "com.google.android.apps.photos.photoadapteritem.PhotoCellView",
@@ -247,121 +238,6 @@ class MainHook : IXposedHookLoadPackage {
             )
         } catch (_: Throwable) {
         }
-    }
-
-    /**
-     * Photos normally restores/opens its main screen.  Make the module open
-     * the requested album itself, so testing the filename overlay never
-     * depends on manually selecting Albums first.
-     */
-    private fun installAutomaticRenegadeAlbumOpen() {
-        XposedHelpers.findAndHookMethod(
-            Activity::class.java,
-            "onResume",
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as? Activity ?: return
-                    if (activity.packageName != "com.google.android.apps.photos") return
-                    registerSettingsReceiver()
-                    scheduleRenegadeAlbumOpen(activity, 0)
-                }
-            }
-        )
-    }
-
-    private fun scheduleRenegadeAlbumOpen(activity: Activity, attempt: Int) {
-        val decor = activity.window?.decorView ?: return
-        decor.postDelayed({
-            if (activity.isFinishing || activity.isDestroyed) return@postDelayed
-
-            val nextAttempt = synchronized(albumOpenLock) {
-                val previous = albumOpenAttempts[activity] ?: -1
-                if (attempt <= previous) return@postDelayed
-                albumOpenAttempts[activity] = attempt
-                attempt
-            }
-
-            if (findRenegadeAlbumCard(decor) != null) {
-                findRenegadeAlbumCard(decor)?.performClick()
-                return@postDelayed
-            }
-
-            // Compose exposes the album card as a virtual accessibility node,
-            // not as a real child View.  Once Albums is visible its first
-            // custom album row is at this stable position on this Photos
-            // layout; send the tap through the real window so Compose handles
-            // it exactly like a user tap.
-            if (nextAttempt >= 2 && isAlbumGridOpen(activity, decor)) {
-                dispatchTap(decor, 280f, 496f)
-                return@postDelayed
-            }
-
-            // The launcher can land on Photos/Home.  Select Albums first;
-            // the album card is then available after Compose renders it.
-            clickAlbumsTab(activity, decor)
-            if (nextAttempt < 8) {
-                scheduleRenegadeAlbumOpen(activity, nextAttempt + 1)
-            }
-        }, if (attempt == 0) 700L else 450L)
-    }
-
-    private fun isAlbumGridOpen(activity: Activity, root: View): Boolean {
-        return try {
-            val id = activity.resources.getIdentifier(
-                "album_fragment_root",
-                "id",
-                "com.google.android.apps.photos"
-            )
-            id != 0 && root.findViewById<View>(id) == null
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
-    private fun dispatchTap(root: View, x: Float, y: Float) {
-        val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0)
-        val up = MotionEvent.obtain(downTime, downTime + 60L, MotionEvent.ACTION_UP, x, y, 0)
-        try {
-            down.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
-            up.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
-            root.dispatchTouchEvent(down)
-            root.dispatchTouchEvent(up)
-        } finally {
-            down.recycle()
-            up.recycle()
-        }
-    }
-
-    private fun clickAlbumsTab(activity: Activity, root: View) {
-        try {
-            val id = activity.resources.getIdentifier(
-                "tab_collections",
-                "id",
-                "com.google.android.apps.photos"
-            )
-            if (id != 0) {
-                val tab = root.findViewById<View>(id)
-                if (tab != null && !tab.isSelected) tab.performClick()
-            }
-        } catch (_: Throwable) {
-        }
-    }
-
-    private fun findRenegadeAlbumCard(root: View): View? {
-        if (root !is ViewGroup) return null
-        for (index in 0 until root.childCount) {
-            val child = root.getChildAt(index)
-            if (child is TextView && child.text?.toString()?.trim() == "Renegade Immortal") {
-                var candidate: View? = child
-                repeat(8) {
-                    if (candidate?.isClickable == true) return candidate
-                    candidate = (candidate?.parent as? View)
-                }
-            }
-            findRenegadeAlbumCard(child)?.let { return it }
-        }
-        return null
     }
 
     private fun findBoundMedia(view: View): Any? {
