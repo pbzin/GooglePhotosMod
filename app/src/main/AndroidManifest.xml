@@ -25,6 +25,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".SettingsReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.pbzin.googlephotosmod.action.REQUEST_SETTINGS" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

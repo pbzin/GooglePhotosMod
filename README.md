@@ -1,5 +1,13 @@
 # GooglePhotosMod
 
+## Playback option
+
+The module settings screen includes a switch to force Google's software HEVC
+decoder for videos that the Qualcomm decoder cannot configure (for example,
+high-resolution HEVC files). Disable the switch to restore the default Google
+Photos decoder. The setting is applied at runtime and is also requested again
+when Google Photos starts.
+
 Módulo LSPosed para o Google Fotos. No álbum `Renegade Immortal`, o módulo abre o álbum automaticamente e exibe o nome real dos vídeos sobre cada item da lista, incluindo a extensão (`.mp4`, `.mkv`, etc.).
 
 ## Requisitos

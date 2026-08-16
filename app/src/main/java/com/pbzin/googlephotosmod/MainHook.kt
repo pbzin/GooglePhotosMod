@@ -5,6 +5,13 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.app.Activity
+import android.app.AndroidAppHelper
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.MediaCodec
+import android.os.Build
 import android.view.View
 import android.view.ViewGroup
 import android.view.MotionEvent
@@ -20,6 +27,7 @@ import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
+import de.robv.android.xposed.XSharedPreferences
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
 
 /**
@@ -35,17 +43,40 @@ class MainHook : IXposedHookLoadPackage {
     private var textPaint: Paint? = null
     private var backgroundPaint: Paint? = null
     private var loggedFilenameLoad = false
+    private var loggedCodecHookCall = false
     private val filenameCache = ConcurrentHashMap<Long, String>()
     private val filenameLoads = ConcurrentHashMap.newKeySet<Long>()
     private val mediaStoreFilenameCache = ConcurrentHashMap<Long, String>()
     private val filenameExecutor = Executors.newSingleThreadExecutor()
     private val albumOpenAttempts = WeakHashMap<Activity, Int>()
     private val albumOpenLock = Any()
-
+    private val modulePreferences = XSharedPreferences(
+        ModuleSettings.PACKAGE_NAME,
+        ModuleSettings.PREFS_NAME
+    )
+    @Volatile
+    private var broadcastSettingKnown = false
+    @Volatile
+    private var broadcastSettingEnabled = false
+    @Volatile
+    private var settingsReceiverRegistered = false
+    private val settingsReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ModuleSettings.GET_SETTINGS_ACTION) return
+            broadcastSettingEnabled = intent.getBooleanExtra(
+                ModuleSettings.ENABLED_RESULT_KEY,
+                false
+            )
+            broadcastSettingKnown = true
+            XposedBridge.log("GooglePhotosMod: setting broadcast received enabled=$broadcastSettingEnabled")
+        }
+    }
     override fun handleLoadPackage(lpparam: LoadPackageParam) {
         if (lpparam.packageName != "com.google.android.apps.photos") return
 
         try {
+            installSoftwareHevcOverride()
+            registerSettingsReceiver()
             installAutomaticRenegadeAlbumOpen()
 
             val photoCellView = XposedHelpers.findClass(
@@ -106,6 +137,119 @@ class MainHook : IXposedHookLoadPackage {
     }
 
     /**
+     * Photos/Media3 normally selects the Qualcomm HEVC decoder first. On this
+     * device that decoder rejects 3840x1632 files, while Android also exposes
+     * a software HEVC decoder. Replace only HEVC codec creation when the user
+     * enables the option in the module UI.
+     */
+    private fun installSoftwareHevcOverride() {
+        XposedHelpers.findAndHookMethod(
+            MediaCodec::class.java,
+            "createByCodecName",
+            String::class.java,
+            object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val codecName = param.args.firstOrNull() as? String ?: return
+                    val enabled = isSoftwareHevcEnabled()
+                    if (!loggedCodecHookCall) {
+                        XposedBridge.log(
+                            "GooglePhotosMod: MediaCodec.createByCodecName name=$codecName enabled=$enabled"
+                        )
+                        loggedCodecHookCall = true
+                    }
+                    if (!enabled) return
+                    if (codecName.contains("hevc", ignoreCase = true) &&
+                        !codecName.equals(SOFTWARE_HEVC_DECODER, ignoreCase = true)
+                    ) {
+                        XposedBridge.log(
+                            "GooglePhotosMod: replacing HEVC decoder $codecName with $SOFTWARE_HEVC_DECODER"
+                        )
+                        param.args[0] = SOFTWARE_HEVC_DECODER
+                    }
+                }
+            }
+        )
+
+        XposedHelpers.findAndHookMethod(
+            MediaCodec::class.java,
+            "createDecoderByType",
+            String::class.java,
+            object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val mime = param.args.firstOrNull() as? String ?: return
+                    val enabled = isSoftwareHevcEnabled()
+                    if (!loggedCodecHookCall) {
+                        XposedBridge.log(
+                            "GooglePhotosMod: MediaCodec.createDecoderByType mime=$mime enabled=$enabled"
+                        )
+                        loggedCodecHookCall = true
+                    }
+                    if (!enabled || !mime.equals("video/hevc", ignoreCase = true)) {
+                        return
+                    }
+                    try {
+                        param.result = MediaCodec.createByCodecName(SOFTWARE_HEVC_DECODER)
+                        XposedBridge.log(
+                            "GooglePhotosMod: forcing $SOFTWARE_HEVC_DECODER for $mime"
+                        )
+                    } catch (t: Throwable) {
+                        XposedBridge.log(
+                            "GooglePhotosMod: software HEVC decoder unavailable: ${t.javaClass.name}: ${t.message}"
+                        )
+                    }
+                }
+            }
+        )
+        XposedBridge.log(
+            "GooglePhotosMod: HEVC decoder hooks installed; enabled=${isSoftwareHevcEnabled()}"
+        )
+    }
+
+    private fun isSoftwareHevcEnabled(): Boolean {
+        if (broadcastSettingKnown) return broadcastSettingEnabled
+
+        return try {
+            modulePreferences.reload()
+            modulePreferences.getBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, false)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun registerSettingsReceiver() {
+        if (settingsReceiverRegistered) return
+        val application = AndroidAppHelper.currentApplication() ?: return
+        try {
+            val filter = IntentFilter(ModuleSettings.GET_SETTINGS_ACTION)
+            if (Build.VERSION.SDK_INT >= 33) {
+                application.registerReceiver(
+                    settingsReceiver,
+                    filter,
+                    Context.RECEIVER_EXPORTED
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                application.registerReceiver(settingsReceiver, filter)
+            }
+            settingsReceiverRegistered = true
+            XposedBridge.log("GooglePhotosMod: settings broadcast receiver registered")
+            requestSettingsBroadcast()
+        } catch (t: Throwable) {
+            XposedBridge.log("GooglePhotosMod: settings receiver registration failed: ${t.message}")
+        }
+    }
+
+    private fun requestSettingsBroadcast() {
+        try {
+            AndroidAppHelper.currentApplication()?.sendBroadcast(
+                Intent(ModuleSettings.REQUEST_SETTINGS_ACTION)
+                    .setPackage(ModuleSettings.PACKAGE_NAME)
+            )
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
      * Photos normally restores/opens its main screen.  Make the module open
      * the requested album itself, so testing the filename overlay never
      * depends on manually selecting Albums first.
@@ -118,6 +262,7 @@ class MainHook : IXposedHookLoadPackage {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     val activity = param.thisObject as? Activity ?: return
                     if (activity.packageName != "com.google.android.apps.photos") return
+                    registerSettingsReceiver()
                     scheduleRenegadeAlbumOpen(activity, 0)
                 }
             }
@@ -760,5 +905,6 @@ class MainHook : IXposedHookLoadPackage {
     companion object {
         private const val CACHE_MEDIA_ID = "google_photos_mod_media_identity"
         private const val CACHE_TITLE = "google_photos_mod_video_title"
+        private const val SOFTWARE_HEVC_DECODER = "c2.android.hevc.decoder"
     }
 }
