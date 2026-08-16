@@ -895,7 +895,7 @@ class MainHook : IXposedHookLoadPackage {
         val textHeight = metrics.bottom - metrics.top
         val rectHeight = textHeight + padding * 2f
         val left = margin
-        val top = height - margin - rectHeight
+        val top = margin
         val right = left + paint.measureText(shown) + padding * 2f
 
         canvas.drawRoundRect(RectF(left, top, right, top + rectHeight), 5f * density, 5f * density, backgroundPaint!!)
