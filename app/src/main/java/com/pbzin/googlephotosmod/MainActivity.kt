@@ -61,6 +61,38 @@ class MainActivity : AppCompatActivity() {
             topMargin = 32
         })
 
+        content.addView(SwitchCompat(this).apply {
+            text = "Manter Job de upload ativo sob pressão"
+            textSize = 16f
+            isChecked = preferences.getBoolean(ModuleSettings.HOLD_BACKUP_JOB, false)
+            setOnCheckedChangeListener { _, enabled ->
+                preferences.edit()
+                    .putBoolean(ModuleSettings.HOLD_BACKUP_JOB, enabled)
+                    .commit()
+                makePreferencesReadable()
+                broadcastSettings(
+                    preferences.getBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, false),
+                    enabled
+                )
+                Toast.makeText(
+                    context,
+                    if (enabled) "Retenção temporária de upload ativada" else "Retenção de upload desativada",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topMargin = 18
+        })
+
+        content.addView(TextView(this).apply {
+            text = "Aplica-se somente aos Jobs de backup conhecidos e apenas quando houver tráfego recente. O encerramento é adiado uma única vez por até 60 segundos."
+            textSize = 14f
+            alpha = 0.75f
+        }, matchParams().apply { topMargin = 8 })
+
         content.addView(TextView(this).apply {
             text = "Ative para vídeos HEVC de alta resolução que exibem “não foi possível reproduzir”. Desative para voltar ao decoder padrão. A alteração vale no próximo vídeo; force o encerramento do Google Fotos se necessário."
             textSize = 14f
@@ -69,7 +101,10 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(content)
         makePreferencesReadable()
-        broadcastSetting(preferences.getBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, false))
+        broadcastSettings(
+            preferences.getBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, false),
+            preferences.getBoolean(ModuleSettings.HOLD_BACKUP_JOB, false)
+        )
     }
 
     private fun matchParams() = LinearLayout.LayoutParams(
@@ -87,11 +122,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun broadcastSetting(enabled: Boolean) {
+        broadcastSettings(enabled, false)
+    }
+
+    private fun broadcastSettings(hevcEnabled: Boolean, holdBackupJob: Boolean) {
         try {
             sendBroadcast(
                 Intent(ModuleSettings.GET_SETTINGS_ACTION)
                     .setPackage("com.google.android.apps.photos")
-                    .putExtra(ModuleSettings.ENABLED_RESULT_KEY, enabled)
+                    .putExtra(ModuleSettings.ENABLED_RESULT_KEY, hevcEnabled)
+                    .putExtra(ModuleSettings.HOLD_BACKUP_JOB_RESULT_KEY, holdBackupJob)
             )
         } catch (_: Throwable) {
         }

@@ -5,12 +5,15 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.app.AndroidAppHelper
+import android.app.job.JobParameters
+import android.app.job.JobService
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.MediaCodec
 import android.os.Build
+import android.net.TrafficStats
 import android.view.View
 import android.provider.MediaStore
 import java.util.Collections
@@ -42,6 +45,10 @@ class MainHook : IXposedHookLoadPackage {
     private val filenameLoads = ConcurrentHashMap.newKeySet<Long>()
     private val mediaStoreFilenameCache = ConcurrentHashMap<Long, String>()
     private val filenameExecutor = Executors.newSingleThreadExecutor()
+    private val backupJobExecutor = Executors.newSingleThreadScheduledExecutor()
+    private val backupJobs = ConcurrentHashMap<Int, Long>()
+    private val delayedBackupFinishes = ConcurrentHashMap.newKeySet<String>()
+    private val backupJobIds = setOf(1026, 1043, 1046)
     private val modulePreferences = XSharedPreferences(
         ModuleSettings.PACKAGE_NAME,
         ModuleSettings.PREFS_NAME
@@ -51,6 +58,8 @@ class MainHook : IXposedHookLoadPackage {
     @Volatile
     private var broadcastSettingEnabled = false
     @Volatile
+    private var holdBackupJobEnabled = false
+    @Volatile
     private var settingsReceiverRegistered = false
     private val settingsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -59,8 +68,15 @@ class MainHook : IXposedHookLoadPackage {
                 ModuleSettings.ENABLED_RESULT_KEY,
                 false
             )
+            holdBackupJobEnabled = intent.getBooleanExtra(
+                ModuleSettings.HOLD_BACKUP_JOB_RESULT_KEY,
+                false
+            )
             broadcastSettingKnown = true
-            XposedBridge.log("GooglePhotosMod: setting broadcast received enabled=$broadcastSettingEnabled")
+            XposedBridge.log(
+                "GooglePhotosMod: settings received hevc=$broadcastSettingEnabled " +
+                    "holdBackupJob=$holdBackupJobEnabled"
+            )
         }
     }
     override fun handleLoadPackage(lpparam: LoadPackageParam) {
@@ -69,6 +85,7 @@ class MainHook : IXposedHookLoadPackage {
         try {
             installSoftwareHevcOverride()
             registerSettingsReceiver()
+            installBackupJobHooks(lpparam.classLoader)
 
             val photoCellView = XposedHelpers.findClass(
                 "com.google.android.apps.photos.photoadapteritem.PhotoCellView",
@@ -125,6 +142,114 @@ class MainHook : IXposedHookLoadPackage {
         } catch (t: Throwable) {
             XposedBridge.log("GooglePhotosMod: hook failed: ${t.javaClass.name}: ${t.message}")
         }
+    }
+
+    /**
+     * Keeps a known Photos backup JobService associated with the process for a
+     * short, bounded period when Photos finishes a job while its UID is still
+     * transferring data. This is opt-in and never affects unrelated packages.
+     */
+    private fun installBackupJobHooks(classLoader: ClassLoader) {
+        val jobServices = listOf(
+            "com.google.android.apps.photos.jobqueue.PhotosJobQueueJobsService",
+            "com.google.android.apps.photos.jobqueue.PhotosOfflineJobQueueJobsService",
+            "com.google.android.libraries.social.async.BackgroundTaskJobService"
+        )
+        for (name in jobServices) {
+            try {
+                val clazz = XposedHelpers.findClass(name, classLoader)
+                XposedHelpers.findAndHookMethod(
+                    clazz,
+                    "onStartJob",
+                    JobParameters::class.java,
+                    object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            val params = param.args.firstOrNull() as? JobParameters ?: return
+                            val id = params.jobId
+                            if (id in backupJobIds) {
+                                backupJobs[id] = currentTraffic()
+                                XposedBridge.log(
+                                    "GooglePhotosMod: backup job started class=$name id=$id " +
+                                        "result=${param.result}"
+                                )
+                            }
+                        }
+                    }
+                )
+                XposedHelpers.findAndHookMethod(
+                    clazz,
+                    "onStopJob",
+                    JobParameters::class.java,
+                    object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            val params = param.args.firstOrNull() as? JobParameters ?: return
+                            if (params.jobId in backupJobIds) {
+                                XposedBridge.log(
+                                    "GooglePhotosMod: backup job stopped class=$name id=${params.jobId} " +
+                                        "result=${param.result}"
+                                )
+                            }
+                        }
+                    }
+                )
+            } catch (t: Throwable) {
+                XposedBridge.log("GooglePhotosMod: backup hook unavailable $name: ${t.message}")
+            }
+        }
+
+        XposedHelpers.findAndHookMethod(
+            JobService::class.java,
+            "jobFinished",
+            JobParameters::class.java,
+            Boolean::class.javaPrimitiveType,
+            object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val params = param.args.firstOrNull() as? JobParameters ?: return
+                    val id = params.jobId
+                    if (!holdBackupJobEnabled || id !in backupJobIds) return
+
+                    val baseline = backupJobs[id] ?: return
+                    val traffic = currentTraffic()
+                    val delta = (traffic - baseline).coerceAtLeast(0L)
+                    val key = "$id:${System.identityHashCode(params)}"
+                    if (delta < MIN_UPLOAD_TRAFFIC_BYTES || !delayedBackupFinishes.add(key)) {
+                        backupJobs.remove(id)
+                        return
+                    }
+
+                    param.result = null
+                    val originalMethod = param.method
+                    val receiver = param.thisObject
+                    val args = param.args.copyOf()
+                    XposedBridge.log(
+                        "GooglePhotosMod: delaying backup jobFinished id=$id " +
+                            "trafficDelta=$delta bytes for ${BACKUP_FINISH_DELAY_MS}ms"
+                    )
+                    backupJobExecutor.schedule({
+                        delayedBackupFinishes.remove(key)
+                        backupJobs.remove(id)
+                        try {
+                            XposedBridge.invokeOriginalMethod(originalMethod, receiver, args)
+                        } catch (t: Throwable) {
+                            XposedBridge.log(
+                                "GooglePhotosMod: delayed jobFinished failed id=$id " +
+                                    "${t.javaClass.name}: ${t.message}"
+                            )
+                        }
+                    }, BACKUP_FINISH_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }
+            }
+        )
+        XposedBridge.log("GooglePhotosMod: backup JobService hooks installed")
+    }
+
+    private fun currentTraffic(): Long {
+        val tx = TrafficStats.getUidTxBytes(android.os.Process.myUid())
+        val rx = TrafficStats.getUidRxBytes(android.os.Process.myUid())
+        if (tx == TrafficStats.UNSUPPORTED.toLong() || rx == TrafficStats.UNSUPPORTED.toLong()) {
+            return 0L
+        }
+        return tx + rx
     }
 
     /**
@@ -782,5 +907,7 @@ class MainHook : IXposedHookLoadPackage {
         private const val CACHE_MEDIA_ID = "google_photos_mod_media_identity"
         private const val CACHE_TITLE = "google_photos_mod_video_title"
         private const val SOFTWARE_HEVC_DECODER = "c2.android.hevc.decoder"
+        private const val MIN_UPLOAD_TRAFFIC_BYTES = 32L * 1024L
+        private const val BACKUP_FINISH_DELAY_MS = 60_000L
     }
 }
