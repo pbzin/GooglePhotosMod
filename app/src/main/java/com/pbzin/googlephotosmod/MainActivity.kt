@@ -39,29 +39,6 @@ class MainActivity : AppCompatActivity() {
         }, matchParams())
 
         content.addView(SwitchCompat(this).apply {
-            text = "Forçar decoder HEVC por software"
-            textSize = 16f
-            isChecked = preferences.getBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, false)
-            setOnCheckedChangeListener { _, enabled ->
-                preferences.edit()
-                    .putBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, enabled)
-                    .commit()
-                makePreferencesReadable()
-                broadcastSetting(enabled)
-                Toast.makeText(
-                    context,
-                    if (enabled) "Decoder HEVC por software ativado" else "Decoder padrão restaurado",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply {
-            topMargin = 32
-        })
-
-        content.addView(SwitchCompat(this).apply {
             text = "Manter Job de upload ativo sob pressão"
             textSize = 16f
             isChecked = preferences.getBoolean(ModuleSettings.HOLD_BACKUP_JOB, false)
@@ -70,10 +47,7 @@ class MainActivity : AppCompatActivity() {
                     .putBoolean(ModuleSettings.HOLD_BACKUP_JOB, enabled)
                     .commit()
                 makePreferencesReadable()
-                broadcastSettings(
-                    preferences.getBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, false),
-                    enabled
-                )
+                broadcastSettings(enabled)
                 Toast.makeText(
                     context,
                     if (enabled) "Retenção temporária de upload ativada" else "Retenção de upload desativada",
@@ -84,7 +58,7 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply {
-            topMargin = 18
+            topMargin = 32
         })
 
         content.addView(TextView(this).apply {
@@ -93,16 +67,9 @@ class MainActivity : AppCompatActivity() {
             alpha = 0.75f
         }, matchParams().apply { topMargin = 8 })
 
-        content.addView(TextView(this).apply {
-            text = "Ative para vídeos HEVC de alta resolução que exibem “não foi possível reproduzir”. Desative para voltar ao decoder padrão. A alteração vale no próximo vídeo; force o encerramento do Google Fotos se necessário."
-            textSize = 14f
-            alpha = 0.75f
-        }, matchParams().apply { topMargin = 12 })
-
         setContentView(content)
         makePreferencesReadable()
         broadcastSettings(
-            preferences.getBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, false),
             preferences.getBoolean(ModuleSettings.HOLD_BACKUP_JOB, false)
         )
     }
@@ -121,18 +88,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun broadcastSetting(enabled: Boolean) {
-        broadcastSettings(enabled, false)
-    }
-
-    private fun broadcastSettings(hevcEnabled: Boolean, holdBackupJob: Boolean) {
+    private fun broadcastSettings(holdBackupJob: Boolean) {
         try {
-            sendBroadcast(
-                Intent(ModuleSettings.GET_SETTINGS_ACTION)
-                    .setPackage("com.google.android.apps.photos")
-                    .putExtra(ModuleSettings.ENABLED_RESULT_KEY, hevcEnabled)
-                    .putExtra(ModuleSettings.HOLD_BACKUP_JOB_RESULT_KEY, holdBackupJob)
-            )
+            val intent = Intent(ModuleSettings.GET_SETTINGS_ACTION)
+            intent.setPackage("com.google.android.apps.photos")
+            @Suppress("WrongConstant")
+            intent.addFlags(0x01000000) // FLAG_RECEIVER_INCLUDE_BACKGROUND
+            intent.putExtra(ModuleSettings.HOLD_BACKUP_JOB_RESULT_KEY, holdBackupJob)
+            sendBroadcast(intent)
         } catch (_: Throwable) {
         }
     }

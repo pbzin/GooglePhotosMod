@@ -11,7 +11,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.media.MediaCodec
 import android.os.Build
 import android.net.TrafficStats
 import android.view.View
@@ -24,23 +23,15 @@ import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.XSharedPreferences
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
 
 /**
  * Shows the real filename of video items in the Google Photos grid.
- *
- * The important part is that this does not inspect Cursor strings or walk an
- * arbitrary object graph.  In the current Photos build the grid item is:
- *
- * RecyclerView.ViewHolder -> f65819T (apcu) -> f38145a (btcc media)
- * btcc.mo3361b(aeiy.class) -> aeiy.f11113a (the filename feature).
  */
 class MainHook : IXposedHookLoadPackage {
     private var textPaint: Paint? = null
     private var backgroundPaint: Paint? = null
     private var loggedFilenameLoad = false
-    private var loggedCodecHookCall = false
     private val filenameCache = ConcurrentHashMap<Long, String>()
     private val filenameLoads = ConcurrentHashMap.newKeySet<Long>()
     private val mediaStoreFilenameCache = ConcurrentHashMap<Long, String>()
@@ -49,14 +40,8 @@ class MainHook : IXposedHookLoadPackage {
     private val backupJobs = ConcurrentHashMap<Int, Long>()
     private val delayedBackupFinishes = ConcurrentHashMap.newKeySet<String>()
     private val backupJobIds = setOf(1026, 1043, 1046)
-    private val modulePreferences = XSharedPreferences(
-        ModuleSettings.PACKAGE_NAME,
-        ModuleSettings.PREFS_NAME
-    )
     @Volatile
     private var broadcastSettingKnown = false
-    @Volatile
-    private var broadcastSettingEnabled = false
     @Volatile
     private var holdBackupJobEnabled = false
     @Volatile
@@ -64,17 +49,13 @@ class MainHook : IXposedHookLoadPackage {
     private val settingsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ModuleSettings.GET_SETTINGS_ACTION) return
-            broadcastSettingEnabled = intent.getBooleanExtra(
-                ModuleSettings.ENABLED_RESULT_KEY,
-                false
-            )
             holdBackupJobEnabled = intent.getBooleanExtra(
                 ModuleSettings.HOLD_BACKUP_JOB_RESULT_KEY,
                 false
             )
             broadcastSettingKnown = true
             XposedBridge.log(
-                "GooglePhotosMod: settings received hevc=$broadcastSettingEnabled " +
+                "GooglePhotosMod: settings received! " +
                     "holdBackupJob=$holdBackupJobEnabled"
             )
         }
@@ -83,17 +64,24 @@ class MainHook : IXposedHookLoadPackage {
         if (lpparam.packageName != "com.google.android.apps.photos") return
 
         try {
-            installSoftwareHevcOverride()
-            registerSettingsReceiver()
-            installBackupJobHooks(lpparam.classLoader)
+            // Hook Application.onCreate to ensure we have a valid context for the receiver
+            XposedHelpers.findAndHookMethod(
+                "android.app.Application",
+                lpparam.classLoader,
+                "onCreate",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        registerSettingsReceiver()
+                        installBackupJobHooks(lpparam.classLoader)
+                    }
+                }
+            )
 
             val photoCellView = XposedHelpers.findClass(
                 "com.google.android.apps.photos.photoadapteritem.PhotoCellView",
                 lpparam.classLoader
             )
 
-            // draw() is used instead of onDraw(): it runs after PhotoCellView's
-            // own overlay and after its children, so our label stays visible.
             XposedHelpers.findAndHookMethod(
                 photoCellView,
                 "draw",
@@ -118,8 +106,6 @@ class MainHook : IXposedHookLoadPackage {
                         val title = if (cachedIdentity == mediaIdentity && !cachedTitle.isNullOrBlank()) {
                             cachedTitle
                         } else if (isVideoMedia(media)) {
-                            // A missing feature may be loaded asynchronously. Retry on
-                            // later draws until that load completes.
                             val resolved = findFilenameInBoundItem(view)
                                 ?: resolveVideoTitle(media, view, lpparam.classLoader)
                             XposedHelpers.setAdditionalInstanceField(view, CACHE_MEDIA_ID, mediaIdentity)
@@ -138,17 +124,12 @@ class MainHook : IXposedHookLoadPackage {
                 }
             )
 
-            XposedBridge.log("GooglePhotosMod: hooked PhotoCellView.draw; using btcc -> aeiy.f11113a")
+            XposedBridge.log("GooglePhotosMod: hooked PhotoCellView.draw")
         } catch (t: Throwable) {
             XposedBridge.log("GooglePhotosMod: hook failed: ${t.javaClass.name}: ${t.message}")
         }
     }
 
-    /**
-     * Keeps a known Photos backup JobService associated with the process for a
-     * short, bounded period when Photos finishes a job while its UID is still
-     * transferring data. This is opt-in and never affects unrelated packages.
-     */
     private fun installBackupJobHooks(classLoader: ClassLoader) {
         val jobServices = listOf(
             "com.google.android.apps.photos.jobqueue.PhotosJobQueueJobsService",
@@ -252,86 +233,6 @@ class MainHook : IXposedHookLoadPackage {
         return tx + rx
     }
 
-    /**
-     * Photos/Media3 normally selects the Qualcomm HEVC decoder first. On this
-     * device that decoder rejects 3840x1632 files, while Android also exposes
-     * a software HEVC decoder. Replace only HEVC codec creation when the user
-     * enables the option in the module UI.
-     */
-    private fun installSoftwareHevcOverride() {
-        XposedHelpers.findAndHookMethod(
-            MediaCodec::class.java,
-            "createByCodecName",
-            String::class.java,
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val codecName = param.args.firstOrNull() as? String ?: return
-                    val enabled = isSoftwareHevcEnabled()
-                    if (!loggedCodecHookCall) {
-                        XposedBridge.log(
-                            "GooglePhotosMod: MediaCodec.createByCodecName name=$codecName enabled=$enabled"
-                        )
-                        loggedCodecHookCall = true
-                    }
-                    if (!enabled) return
-                    if (codecName.contains("hevc", ignoreCase = true) &&
-                        !codecName.equals(SOFTWARE_HEVC_DECODER, ignoreCase = true)
-                    ) {
-                        XposedBridge.log(
-                            "GooglePhotosMod: replacing HEVC decoder $codecName with $SOFTWARE_HEVC_DECODER"
-                        )
-                        param.args[0] = SOFTWARE_HEVC_DECODER
-                    }
-                }
-            }
-        )
-
-        XposedHelpers.findAndHookMethod(
-            MediaCodec::class.java,
-            "createDecoderByType",
-            String::class.java,
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val mime = param.args.firstOrNull() as? String ?: return
-                    val enabled = isSoftwareHevcEnabled()
-                    if (!loggedCodecHookCall) {
-                        XposedBridge.log(
-                            "GooglePhotosMod: MediaCodec.createDecoderByType mime=$mime enabled=$enabled"
-                        )
-                        loggedCodecHookCall = true
-                    }
-                    if (!enabled || !mime.equals("video/hevc", ignoreCase = true)) {
-                        return
-                    }
-                    try {
-                        param.result = MediaCodec.createByCodecName(SOFTWARE_HEVC_DECODER)
-                        XposedBridge.log(
-                            "GooglePhotosMod: forcing $SOFTWARE_HEVC_DECODER for $mime"
-                        )
-                    } catch (t: Throwable) {
-                        XposedBridge.log(
-                            "GooglePhotosMod: software HEVC decoder unavailable: ${t.javaClass.name}: ${t.message}"
-                        )
-                    }
-                }
-            }
-        )
-        XposedBridge.log(
-            "GooglePhotosMod: HEVC decoder hooks installed; enabled=${isSoftwareHevcEnabled()}"
-        )
-    }
-
-    private fun isSoftwareHevcEnabled(): Boolean {
-        if (broadcastSettingKnown) return broadcastSettingEnabled
-
-        return try {
-            modulePreferences.reload()
-            modulePreferences.getBoolean(ModuleSettings.FORCE_SOFTWARE_HEVC, false)
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
     private fun registerSettingsReceiver() {
         if (settingsReceiverRegistered) return
         val application = AndroidAppHelper.currentApplication() ?: return
@@ -357,11 +258,14 @@ class MainHook : IXposedHookLoadPackage {
 
     private fun requestSettingsBroadcast() {
         try {
-            AndroidAppHelper.currentApplication()?.sendBroadcast(
-                Intent(ModuleSettings.REQUEST_SETTINGS_ACTION)
-                    .setPackage(ModuleSettings.PACKAGE_NAME)
-            )
-        } catch (_: Throwable) {
+            XposedBridge.log("GooglePhotosMod: requesting settings via broadcast...")
+            val intent = Intent(ModuleSettings.REQUEST_SETTINGS_ACTION)
+            intent.setPackage(ModuleSettings.PACKAGE_NAME)
+            @Suppress("WrongConstant")
+            intent.addFlags(0x01000000) // FLAG_RECEIVER_INCLUDE_BACKGROUND
+            AndroidAppHelper.currentApplication()?.sendBroadcast(intent)
+        } catch (t: Throwable) {
+            XposedBridge.log("GooglePhotosMod: requestSettingsBroadcast failed: ${t.message}")
         }
     }
 
@@ -372,10 +276,6 @@ class MainHook : IXposedHookLoadPackage {
         while (parent != null && attempts++ < 8) {
             if (parent.javaClass.name.contains("RecyclerView")) {
                 try {
-                    // m13825h resolves the holder even when Photos has wrapped
-                    // the cell in an intermediate child. The direct-child
-                    // method m13829l is the fallback used by this APK's own
-                    // adapters.
                     val holder = findHolderFromLayoutParams(view) ?: try {
                         XposedHelpers.callMethod(parent, "m13825h", view)
                     } catch (_: Throwable) {
@@ -391,7 +291,6 @@ class MainHook : IXposedHookLoadPackage {
                         return media
                     }
                 } catch (_: Throwable) {
-                    // A cell can be drawn while RecyclerView is recycling it.
                 }
             }
             parent = (parent as? View)?.parent
@@ -520,9 +419,6 @@ class MainHook : IXposedHookLoadPackage {
     private fun findMediaCandidate(value: Any?, depth: Int): Any? {
         if (value == null) return null
         try {
-            // The album grid currently stores a btcg reference in vxz.b.  It
-            // has the stable media key even when the optional btcc video
-            // predicate is not present on that reference.
             XposedHelpers.callMethod(value, "mo3364e")
             return value
         } catch (_: Throwable) {
@@ -532,9 +428,6 @@ class MainHook : IXposedHookLoadPackage {
             implementsInterfaceNamed(value.javaClass, "btcc")
         ) return value
 
-        // In the device's optimized Photos runtime mqv.g() exposes the
-        // actual btcc object; JADX's symbolic method names are not retained
-        // there (they are a/b/c... instead of mo336x...).
         if (value.javaClass.simpleName == "mqv") {
             try {
                 val media = XposedHelpers.callMethod(value, "g")
@@ -545,8 +438,6 @@ class MainHook : IXposedHookLoadPackage {
             }
         }
 
-        // vxz.a is a CoreMediaIdentifier (vxg); vxg.a is the actual btcc
-        // media object used by the details screen.
         if (value.javaClass.simpleName == "vxg") {
             val inner = readField(value, "f252272a") ?: readField(value, "a")
             findMediaCandidate(inner, depth + 1)?.let { return it }
@@ -583,9 +474,6 @@ class MainHook : IXposedHookLoadPackage {
             if (isVideoMedia(media)) {
                 queryMediaStoreFilename(view, media)?.let { return it }
             }
-            // This is the feature used by the media-details screen for the
-            // actual local filename (for example, 939393.mp4). vxi is the
-            // collection/album display-name feature and is not the filename.
             val filenameFeatureClass = findFilenameFeatureClass(media, classLoader)
             val feature = findFeature(media, filenameFeatureClass)
             val name = readFeatureFilename(feature)
@@ -671,12 +559,6 @@ class MainHook : IXposedHookLoadPackage {
         return null
     }
 
-    /**
-     * Grid queries do not always request the filename feature. When that
-     * happens, ask Photos' own media provider for the same media and request
-     * exactly aeiy, which is the feature used by the Info/details screen.
-     * This is deliberately asynchronous because the provider can hit disk.
-     */
     private fun loadCompleteFilename(media: Any, view: View, classLoader: ClassLoader): String? {
         val key = mediaKey(media) ?: return null
 
@@ -817,7 +699,6 @@ class MainHook : IXposedHookLoadPackage {
     }
 
     private fun findFeature(media: Any, featureClass: Class<*>): Any? {
-        // Exact method from the btcc/btca interface in the inspected APK.
         try {
             XposedHelpers.callMethod(media, "mo3361b", featureClass)?.let { return it }
         } catch (_: Throwable) {
@@ -827,8 +708,6 @@ class MainHook : IXposedHookLoadPackage {
         } catch (_: Throwable) {
         }
 
-        // Fallback for a future build where JADX/R8 changes the bridge name:
-        // identify the feature lookup by its signature, not by a guessed text.
         val methods = (media.javaClass.methods.asSequence() + media.javaClass.declaredMethods.asSequence())
             .distinctBy { it.name + it.toGenericString() }
         for (method in methods) {
@@ -906,7 +785,6 @@ class MainHook : IXposedHookLoadPackage {
     companion object {
         private const val CACHE_MEDIA_ID = "google_photos_mod_media_identity"
         private const val CACHE_TITLE = "google_photos_mod_video_title"
-        private const val SOFTWARE_HEVC_DECODER = "c2.android.hevc.decoder"
         private const val MIN_UPLOAD_TRAFFIC_BYTES = 32L * 1024L
         private const val BACKUP_FINISH_DELAY_MS = 60_000L
     }

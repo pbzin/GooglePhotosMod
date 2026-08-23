@@ -20,10 +20,6 @@ Mods and enhancements for the Google Photos app via LSPosed. This module adds us
 Displays the original video filename (e.g., `video_01.mp4`, `vacation.mkv`) directly on the main Google Photos grid.
 *   **How it works**: Hooks into `PhotoCellView.draw` and dynamically resolves the media object title, allowing for quick file identification without opening details.
 
-### ⚙️ Force Software HEVC Decoder
-An option to bypass playback failures on ultra-high resolution videos (e.g., 4K+ with specific aspect ratios) that the hardware decoder (Qualcomm) might reject.
-*   **How it works**: Intercepts `MediaCodec` creation and replaces the default decoder with the system's `c2.android.hevc.decoder`.
-
 ### ⏳ Backup Optimization (Smart Hold)
 Prevents the system from prematurely terminating Google Photos backup tasks while data transfer is still active.
 *   **How it works**: Monitors network traffic for the app's UID and delays the `jobFinished` call in specific backup services if an upload is still in progress.
