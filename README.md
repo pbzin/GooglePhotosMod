@@ -1,4 +1,4 @@
-<img src="./app/src/main/ic_launcher-playstore.png" width="96" height="96" alt="GooglePhotosMod icon" />
+<img src="./logooriginal.jpg" width="150" height="auto" alt="GooglePhotosMod logo" />
 
 <p align="left">
   <a href="https://visitorbadge.io/status?path=https%3A%2F%2Fgithub.com%2Fpbzin%2FGooglePhotosMod">
@@ -12,44 +12,44 @@
 
 # GooglePhotosMod
 
-Mods e aprimoramentos para o aplicativo Google Fotos via LSPosed. Este módulo adiciona funcionalidades úteis e correções técnicas para melhorar a experiência de gerenciamento de mídia.
+Mods and enhancements for the Google Photos app via LSPosed. This module adds useful features and technical fixes to improve the media management experience.
 
-## Funcionalidades (Hooks)
+## Features (Hooks)
 
-### 🎥 Exibição de Nome Real de Arquivo
-Exibe o nome original do arquivo de vídeo (ex: `video_01.mp4`, `ferias.mkv`) diretamente na grade (grid) principal do Google Fotos. 
-*   **Como funciona**: Faz o hook no `PhotoCellView.draw` e resolve dinamicamente o título do objeto de mídia, permitindo identificar arquivos rapidamente sem abrir os detalhes.
+### 🎥 Real Filename Display
+Displays the original video filename (e.g., `video_01.mp4`, `vacation.mkv`) directly on the main Google Photos grid.
+*   **How it works**: Hooks into `PhotoCellView.draw` and dynamically resolves the media object title, allowing for quick file identification without opening details.
 
-### ⚙️ Forçar Decoder HEVC via Software
-Opção para contornar falhas de reprodução em vídeos de altíssima resolução (ex: 4K+ com proporções específicas) que o decodificador de hardware (Qualcomm) pode rejeitar.
-*   **Como funciona**: Intercepta a criação do `MediaCodec` e substitui o decodificador padrão pelo `c2.android.hevc.decoder` do sistema.
+### ⚙️ Force Software HEVC Decoder
+An option to bypass playback failures on ultra-high resolution videos (e.g., 4K+ with specific aspect ratios) that the hardware decoder (Qualcomm) might reject.
+*   **How it works**: Intercepts `MediaCodec` creation and replaces the default decoder with the system's `c2.android.hevc.decoder`.
 
-### ⏳ Otimização de Backup (Smart Hold)
-Evita que o sistema encerre prematuramente as tarefas de backup do Google Fotos enquanto ainda há tráfego de dados ativo.
-*   **Como funciona**: Monitora o tráfego de rede do UID do aplicativo e atrasa a chamada de `jobFinished` em serviços de backup específicos se o upload ainda estiver em andamento.
+### ⏳ Backup Optimization (Smart Hold)
+Prevents the system from prematurely terminating Google Photos backup tasks while data transfer is still active.
+*   **How it works**: Monitors network traffic for the app's UID and delays the `jobFinished` call in specific backup services if an upload is still in progress.
 
-## Requisitos
+## Requirements
 
-*   Android 8.0 (Oreo) ou superior.
-*   Ambiente **LSPosed** configurado e ativo.
-*   Google Fotos instalado (`com.google.android.apps.photos`).
+*   Android 8.0 (Oreo) or higher.
+*   **LSPosed** environment configured and active.
+*   Google Photos installed (`com.google.android.apps.photos`).
 
-## Instalação
+## Installation
 
-1.  Baixe o APK mais recente na aba [Releases](https://github.com/pbzin/GooglePhotosMod/releases).
-2.  Instale o módulo e ative-o no gerenciador do LSPosed, selecionando o Google Fotos como escopo.
-3.  Reinicie o Google Fotos (Force Stop) para que as alterações entrem em vigor.
-4.  Acesse as configurações do módulo para ativar/desativar o decoder HEVC via software ou o Smart Hold de backup.
+1.  Download the latest APK from the [Releases](https://github.com/pbzin/GooglePhotosMod/releases) tab.
+2.  Install the module and enable it in the LSPosed manager, selecting Google Photos as the scope.
+3.  Restart Google Photos (Force Stop) for changes to take effect.
+4.  Access the module settings to enable or disable the available mods.
 
-## Desenvolvimento e Build
+## Development and Build
 
-O projeto utiliza **Android Gradle Plugin 9.3.1** com suporte nativo a Kotlin e **Gradle 9.5.0**.
+The project uses **Android Gradle Plugin 9.3.1** with native Kotlin support and **Gradle 9.5.0**.
 
 ```bash
 ./gradlew app:assembleDebug
 ```
 
-O APK final será gerado em: `app/build/outputs/apk/debug/app-debug.apk`.
+The final APK will be generated at: `app/build/outputs/apk/debug/app-debug.apk`.
 
 ---
-*Nota: Este projeto é um módulo Xposed e não possui afiliação oficial com o Google.*
+*Note: This project is an Xposed module and has no official affiliation with Google.*
