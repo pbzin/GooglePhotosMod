@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Google Photos Mod</string>
+    <string name="settings_title">Configurações do módulo LSPosed</string>
+    <string name="hold_backup_job_title">Manter Job de upload ativo sob pressão</string>
+    <string name="hold_backup_job_on">Retenção temporária de upload ativada</string>
+    <string name="hold_backup_job_off">Retenção de upload desativada</string>
+    <string name="hold_backup_job_desc">Aplica-se somente aos Jobs de backup conhecidos e apenas quando houver tráfego recente. O encerramento é adiado uma única vez por até 60 segundos.</string>
+</resources>

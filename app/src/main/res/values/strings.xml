@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">Google Photos Mod</string>
+    <string name="settings_title">LSPosed module settings</string>
+    <string name="hold_backup_job_title">Keep upload Job active under pressure</string>
+    <string name="hold_backup_job_on">Temporary upload retention enabled</string>
+    <string name="hold_backup_job_off">Upload retention disabled</string>
+    <string name="hold_backup_job_desc">Applies only to known backup Jobs and only when there is recent traffic. Termination is delayed once for up to 60 seconds.</string>
 </resources>

@@ -28,18 +28,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         content.addView(TextView(this).apply {
-            text = "Google Photos Mod"
+            text = getString(R.string.app_name)
             textSize = 22f
         }, matchParams())
 
         content.addView(TextView(this).apply {
-            text = "Configurações do módulo LSPosed"
+            text = getString(R.string.settings_title)
             textSize = 15f
             alpha = 0.7f
         }, matchParams())
 
         content.addView(SwitchCompat(this).apply {
-            text = "Manter Job de upload ativo sob pressão"
+            text = getString(R.string.hold_backup_job_title)
             textSize = 16f
             isChecked = preferences.getBoolean(ModuleSettings.HOLD_BACKUP_JOB, false)
             setOnCheckedChangeListener { _, enabled ->
@@ -50,7 +50,7 @@ class MainActivity : AppCompatActivity() {
                 broadcastSettings(enabled)
                 Toast.makeText(
                     context,
-                    if (enabled) "Retenção temporária de upload ativada" else "Retenção de upload desativada",
+                    if (enabled) getString(R.string.hold_backup_job_on) else getString(R.string.hold_backup_job_off),
                     Toast.LENGTH_SHORT
                 ).show()
             }
@@ -62,7 +62,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         content.addView(TextView(this).apply {
-            text = "Aplica-se somente aos Jobs de backup conhecidos e apenas quando houver tráfego recente. O encerramento é adiado uma única vez por até 60 segundos."
+            text = getString(R.string.hold_backup_job_desc)
             textSize = 14f
             alpha = 0.75f
         }, matchParams().apply { topMargin = 8 })
